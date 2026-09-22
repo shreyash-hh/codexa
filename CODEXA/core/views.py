@@ -1,14 +1,16 @@
 import logging
 from django.utils import timezone
+from django.http import HttpResponse, Http404
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from .models import Repository, AnalysisRun, Finding, Score
+from .models import Repository, AnalysisRun, Finding, Score, Recommendation
 from .serializers import (
     AnalyzeRequestSerializer,
     RepositorySerializer,
     FindingSerializer,
     ScoreSerializer,
+    RecommendationSerializer,
     AnalysisRunSerializer
 )
 from .services.github_service import (
@@ -17,6 +19,8 @@ from .services.github_service import (
     GitHubServiceError
 )
 from .services.scoring_service import compute_and_save_score
+from .services.ai_service import generate_gemini_recommendations
+from .services.report_service import generate_pdf_report
 from .analyzers.pylint_analyzer import analyze_and_save_pylint
 from .analyzers.bandit_analyzer import analyze_and_save_bandit
 from .analyzers.radon_analyzer import analyze_and_save_radon
@@ -29,9 +33,9 @@ logger = logging.getLogger(__name__)
 class AnalyzeView(APIView):
     """
     POST /api/analyze/
-    Accepts a GitHub URL, clones the repository, saves/updates Repository record,
-    runs full static, security, complexity, and dependency analysis suite,
-    computes weighted domain and composite scores, and returns comprehensive report JSON.
+    Accepts a GitHub URL, clones the repository, runs full analyzer suite,
+    calculates composite and domain scores, generates AI recommendations,
+    persists all records to SQLite, and returns comprehensive JSON results.
     """
     def post(self, request, *args, **kwargs):
         serializer = AnalyzeRequestSerializer(data=request.data)
@@ -80,13 +84,17 @@ class AnalyzeView(APIView):
             # 5. Compute & Persist Multi-Dimensional Health & Security Scores
             score_obj = compute_and_save_score(run=run)
 
-            # 6. Mark Run as Completed
+            # 6. Generate AI Remediation Recommendations (Gemini API / Heuristic)
+            recommendations = generate_gemini_recommendations(run=run)
+
+            # 7. Mark Run as Completed
             run.status = 'completed'
             run.completed_at = timezone.now()
             run.save(update_fields=['status', 'completed_at'])
 
             findings_qs = Finding.objects.filter(run=run)
             findings_data = FindingSerializer(findings_qs, many=True).data
+            recs_data = RecommendationSerializer(recommendations, many=True).data
 
             return Response(
                 {
@@ -108,6 +116,7 @@ class AnalyzeView(APIView):
                         }
                     },
                     "score": ScoreSerializer(score_obj).data,
+                    "recommendations": recs_data,
                     "findings": findings_data,
                     "metadata": clone_result.get('metadata', {}),
                 },
@@ -135,3 +144,39 @@ class AnalyzeView(APIView):
         finally:
             if clone_result and clone_result.get('clone_path'):
                 cleanup_cloned_repo(clone_result['clone_path'])
+
+
+class AnalysisRunDetailView(APIView):
+    """
+    GET /api/runs/<run_id>/
+    Retrieves full details for a specific analysis run.
+    """
+    def get(self, request, run_id, *args, **kwargs):
+        try:
+            run = AnalysisRun.objects.select_related('repository', 'score').prefetch_related('findings', 'recommendations').get(pk=run_id)
+        except AnalysisRun.DoesNotExist:
+            return Response({"success": False, "error": "Analysis run not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            "success": True,
+            "data": AnalysisRunSerializer(run).data
+        })
+
+
+class AnalysisRunPDFReportView(APIView):
+    """
+    GET /api/runs/<run_id>/pdf/
+    Downloads ReportLab executive PDF report for the specified run.
+    """
+    def get(self, request, run_id, *args, **kwargs):
+        try:
+            run = AnalysisRun.objects.select_related('repository', 'score').prefetch_related('findings', 'recommendations').get(pk=run_id)
+        except AnalysisRun.DoesNotExist:
+            raise Http404("Analysis run not found")
+
+        pdf_buffer = generate_pdf_report(run)
+        filename = f"CODEXA_Report_{run.repository.name}_Run{run.id}.pdf"
+
+        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
