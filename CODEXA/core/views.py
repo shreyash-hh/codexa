@@ -16,6 +16,7 @@ from .services.github_service import (
     GitHubServiceError
 )
 from .analyzers.pylint_analyzer import analyze_and_save_pylint
+from .analyzers.bandit_analyzer import analyze_and_save_bandit
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,8 @@ class AnalyzeView(APIView):
     """
     POST /api/analyze/
     Accepts a GitHub URL, clones the repository, saves/updates Repository record,
-    runs Pylint static analysis, records findings, and returns detailed results.
+    runs Pylint static analysis and Bandit security scanning, records findings,
+    and returns detailed analysis results.
     """
     def post(self, request, *args, **kwargs):
         serializer = AnalyzeRequestSerializer(data=request.data)
@@ -63,8 +65,9 @@ class AnalyzeView(APIView):
                 status='running'
             )
 
-            # 4. Run Pylint Analyzer
-            created_findings = analyze_and_save_pylint(run=run, target_dir=clone_path)
+            # 4. Run Analyzers
+            pylint_findings = analyze_and_save_pylint(run=run, target_dir=clone_path)
+            bandit_findings = analyze_and_save_bandit(run=run, target_dir=clone_path)
 
             # 5. Mark Run as Completed
             run.status = 'completed'
@@ -85,7 +88,8 @@ class AnalyzeView(APIView):
                         "started_at": run.started_at,
                         "completed_at": run.completed_at,
                         "total_findings": len(findings_data),
-                        "pylint_findings_count": len(findings_data),
+                        "pylint_findings_count": len(pylint_findings),
+                        "bandit_findings_count": len(bandit_findings),
                     },
                     "findings": findings_data,
                     "metadata": clone_result.get('metadata', {}),
