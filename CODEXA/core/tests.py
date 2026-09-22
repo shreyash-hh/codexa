@@ -7,6 +7,9 @@ from rest_framework import status
 from .models import Repository, AnalysisRun, Finding
 from .analyzers.pylint_analyzer import analyze_and_save_pylint
 from .analyzers.bandit_analyzer import analyze_and_save_bandit
+from .analyzers.radon_analyzer import analyze_and_save_radon
+from .analyzers.semgrep_analyzer import analyze_and_save_semgrep
+from .analyzers.pip_audit_analyzer import analyze_and_save_pip_audit
 
 
 class AnalyzeAPITests(APITestCase):
@@ -50,7 +53,6 @@ class AnalyzeAPITests(APITestCase):
 
     def test_bandit_analyzer_with_insecure_code(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Code with intentional hardcoded password and eval
             insecure_code_path = os.path.join(temp_dir, 'insecure.py')
             with open(insecure_code_path, 'w') as f:
                 f.write('password = "supersecretpassword123"\neval("1+1")\n')
@@ -68,11 +70,72 @@ class AnalyzeAPITests(APITestCase):
             self.assertTrue(all(f.tool_name == 'bandit' for f in findings))
             self.assertTrue(Finding.objects.filter(run=run, tool_name='bandit').exists())
 
+    def test_radon_analyzer_with_complex_code(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            complex_code_path = os.path.join(temp_dir, 'complex.py')
+            # Create a deeply nested function to trigger high cyclomatic complexity
+            nested_code = """
+def complex_fn(a, b, c, d, e, f, g):
+    if a:
+        if b:
+            return 1
+        elif c:
+            return 2
+    elif d:
+        if e:
+            return 3
+        elif f:
+            return 4
+    elif g:
+        return 5
+    return 0
+"""
+            with open(complex_code_path, 'w') as f:
+                f.write(nested_code)
+
+            repo = Repository.objects.create(
+                github_url='https://github.com/test/radon-sample',
+                name='radon-sample',
+                owner='test',
+                status='cloned'
+            )
+            run = AnalysisRun.objects.create(repository=repo, status='running')
+
+            findings = analyze_and_save_radon(run, temp_dir)
+            self.assertGreater(len(findings), 0)
+            self.assertTrue(all(f.tool_name == 'radon' for f in findings))
+            self.assertTrue(Finding.objects.filter(run=run, tool_name='radon').exists())
+
+    def test_pip_audit_analyzer_with_vulnerable_manifest(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            req_path = os.path.join(temp_dir, 'requirements.txt')
+            # Known historical vulnerable dependency
+            with open(req_path, 'w') as f:
+                f.write('urllib3==1.26.4\n')
+
+            repo = Repository.objects.create(
+                github_url='https://github.com/test/pip-audit-sample',
+                name='pip-audit-sample',
+                owner='test',
+                status='cloned'
+            )
+            run = AnalysisRun.objects.create(repository=repo, status='running')
+
+            findings = analyze_and_save_pip_audit(run, temp_dir)
+            self.assertGreater(len(findings), 0)
+            self.assertTrue(all(f.tool_name == 'pip-audit' for f in findings))
+            self.assertTrue(Finding.objects.filter(run=run, tool_name='pip-audit').exists())
+
     @patch('core.views.clone_github_repo')
     @patch('core.views.analyze_and_save_pylint')
     @patch('core.views.analyze_and_save_bandit')
+    @patch('core.views.analyze_and_save_radon')
+    @patch('core.views.analyze_and_save_semgrep')
+    @patch('core.views.analyze_and_save_pip_audit')
     @patch('core.views.cleanup_cloned_repo')
-    def test_analyze_successful_flow(self, mock_cleanup, mock_bandit, mock_pylint, mock_clone):
+    def test_analyze_successful_flow(
+        self, mock_cleanup, mock_pip, mock_semgrep, mock_radon, mock_bandit, mock_pylint, mock_clone
+    ):
         mock_clone.return_value = {
             'success': True,
             'owner': 'octocat',
@@ -90,6 +153,9 @@ class AnalyzeAPITests(APITestCase):
         }
         mock_pylint.return_value = []
         mock_bandit.return_value = []
+        mock_radon.return_value = []
+        mock_semgrep.return_value = []
+        mock_pip.return_value = []
         mock_cleanup.return_value = True
 
         response = self.client.post(
@@ -103,8 +169,12 @@ class AnalyzeAPITests(APITestCase):
         self.assertEqual(response.data['repository']['name'], 'Hello-World')
         self.assertEqual(response.data['repository']['owner'], 'octocat')
         self.assertIn('analysis_run', response.data)
-        self.assertIn('pylint_findings_count', response.data['analysis_run'])
-        self.assertIn('bandit_findings_count', response.data['analysis_run'])
+        summary = response.data['analysis_run']['summary_by_tool']
+        self.assertIn('pylint', summary)
+        self.assertIn('bandit', summary)
+        self.assertIn('radon', summary)
+        self.assertIn('semgrep', summary)
+        self.assertIn('pip_audit', summary)
 
         # Confirm DB records
         self.assertTrue(Repository.objects.filter(github_url=self.sample_github_url).exists())

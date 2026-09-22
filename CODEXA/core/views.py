@@ -17,6 +17,9 @@ from .services.github_service import (
 )
 from .analyzers.pylint_analyzer import analyze_and_save_pylint
 from .analyzers.bandit_analyzer import analyze_and_save_bandit
+from .analyzers.radon_analyzer import analyze_and_save_radon
+from .analyzers.semgrep_analyzer import analyze_and_save_semgrep
+from .analyzers.pip_audit_analyzer import analyze_and_save_pip_audit
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +28,14 @@ class AnalyzeView(APIView):
     """
     POST /api/analyze/
     Accepts a GitHub URL, clones the repository, saves/updates Repository record,
-    runs Pylint static analysis and Bandit security scanning, records findings,
-    and returns detailed analysis results.
+    runs full static, security, complexity, and dependency analysis suite:
+    - Radon (Cyclomatic Complexity)
+    - Pylint (Code Quality & Standards)
+    - Bandit (AST-based Security Scanner)
+    - Semgrep (Pattern-based Security & Bug Scanner)
+    - pip-audit (Known Vulnerability Dependency Scanner)
+    
+    Persists findings to SQLite and returns comprehensive report JSON.
     """
     def post(self, request, *args, **kwargs):
         serializer = AnalyzeRequestSerializer(data=request.data)
@@ -65,9 +74,12 @@ class AnalyzeView(APIView):
                 status='running'
             )
 
-            # 4. Run Analyzers
+            # 4. Execute Analyzers
             pylint_findings = analyze_and_save_pylint(run=run, target_dir=clone_path)
             bandit_findings = analyze_and_save_bandit(run=run, target_dir=clone_path)
+            radon_findings = analyze_and_save_radon(run=run, target_dir=clone_path)
+            semgrep_findings = analyze_and_save_semgrep(run=run, target_dir=clone_path)
+            pip_audit_findings = analyze_and_save_pip_audit(run=run, target_dir=clone_path)
 
             # 5. Mark Run as Completed
             run.status = 'completed'
@@ -88,8 +100,13 @@ class AnalyzeView(APIView):
                         "started_at": run.started_at,
                         "completed_at": run.completed_at,
                         "total_findings": len(findings_data),
-                        "pylint_findings_count": len(pylint_findings),
-                        "bandit_findings_count": len(bandit_findings),
+                        "summary_by_tool": {
+                            "pylint": len(pylint_findings),
+                            "bandit": len(bandit_findings),
+                            "radon": len(radon_findings),
+                            "semgrep": len(semgrep_findings),
+                            "pip_audit": len(pip_audit_findings),
+                        }
                     },
                     "findings": findings_data,
                     "metadata": clone_result.get('metadata', {}),
