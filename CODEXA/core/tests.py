@@ -4,12 +4,13 @@ from unittest.mock import patch
 from django.utils import timezone
 from rest_framework.test import APITestCase
 from rest_framework import status
-from .models import Repository, AnalysisRun, Finding
+from .models import Repository, AnalysisRun, Finding, Score
 from .analyzers.pylint_analyzer import analyze_and_save_pylint
 from .analyzers.bandit_analyzer import analyze_and_save_bandit
 from .analyzers.radon_analyzer import analyze_and_save_radon
 from .analyzers.semgrep_analyzer import analyze_and_save_semgrep
 from .analyzers.pip_audit_analyzer import analyze_and_save_pip_audit
+from .services.scoring_service import calculate_run_scores, compute_and_save_score
 
 
 class AnalyzeAPITests(APITestCase):
@@ -31,6 +32,26 @@ class AnalyzeAPITests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertFalse(response.data['success'])
+
+    def test_scoring_engine_mathematical_calculation(self):
+        # 1. Clean repo (no findings) -> 100 on all metrics
+        clean_scores = calculate_run_scores([])
+        self.assertEqual(clean_scores['quality_score'], 100.0)
+        self.assertEqual(clean_scores['security_score'], 100.0)
+        self.assertEqual(clean_scores['dependency_score'], 100.0)
+        self.assertEqual(clean_scores['composite_score'], 100.0)
+
+        # 2. Repo with critical security finding -> security reduced by 25.0
+        findings = [
+            {'tool_name': 'bandit', 'severity': 'critical'},
+            {'tool_name': 'pip-audit', 'severity': 'high'}, # 10.0 deduction
+        ]
+        scores = calculate_run_scores(findings)
+        self.assertEqual(scores['security_score'], 75.0)
+        self.assertEqual(scores['dependency_score'], 90.0)
+        self.assertEqual(scores['quality_score'], 100.0)
+        # Composite = (0.30 * 100) + (0.45 * 75) + (0.25 * 90) = 30 + 33.75 + 22.5 = 86.25
+        self.assertEqual(scores['composite_score'], 86.25)
 
     def test_pylint_analyzer_with_sample_code(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -73,7 +94,6 @@ class AnalyzeAPITests(APITestCase):
     def test_radon_analyzer_with_complex_code(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             complex_code_path = os.path.join(temp_dir, 'complex.py')
-            # Create a deeply nested function to trigger high cyclomatic complexity
             nested_code = """
 def complex_fn(a, b, c, d, e, f, g):
     if a:
@@ -109,7 +129,6 @@ def complex_fn(a, b, c, d, e, f, g):
     def test_pip_audit_analyzer_with_vulnerable_manifest(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             req_path = os.path.join(temp_dir, 'requirements.txt')
-            # Known historical vulnerable dependency
             with open(req_path, 'w') as f:
                 f.write('urllib3==1.26.4\n')
 
@@ -169,15 +188,12 @@ def complex_fn(a, b, c, d, e, f, g):
         self.assertEqual(response.data['repository']['name'], 'Hello-World')
         self.assertEqual(response.data['repository']['owner'], 'octocat')
         self.assertIn('analysis_run', response.data)
-        summary = response.data['analysis_run']['summary_by_tool']
-        self.assertIn('pylint', summary)
-        self.assertIn('bandit', summary)
-        self.assertIn('radon', summary)
-        self.assertIn('semgrep', summary)
-        self.assertIn('pip_audit', summary)
+        self.assertIn('score', response.data)
+        self.assertEqual(response.data['score']['composite_score'], 100.0)
 
         # Confirm DB records
         self.assertTrue(Repository.objects.filter(github_url=self.sample_github_url).exists())
         repo = Repository.objects.get(github_url=self.sample_github_url)
         self.assertEqual(repo.status, 'cloned')
         self.assertTrue(AnalysisRun.objects.filter(repository=repo, status='completed').exists())
+        self.assertTrue(Score.objects.filter(run__repository=repo).exists())

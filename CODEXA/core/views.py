@@ -3,11 +3,12 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from .models import Repository, AnalysisRun, Finding
+from .models import Repository, AnalysisRun, Finding, Score
 from .serializers import (
     AnalyzeRequestSerializer,
     RepositorySerializer,
     FindingSerializer,
+    ScoreSerializer,
     AnalysisRunSerializer
 )
 from .services.github_service import (
@@ -15,6 +16,7 @@ from .services.github_service import (
     cleanup_cloned_repo,
     GitHubServiceError
 )
+from .services.scoring_service import compute_and_save_score
 from .analyzers.pylint_analyzer import analyze_and_save_pylint
 from .analyzers.bandit_analyzer import analyze_and_save_bandit
 from .analyzers.radon_analyzer import analyze_and_save_radon
@@ -28,14 +30,8 @@ class AnalyzeView(APIView):
     """
     POST /api/analyze/
     Accepts a GitHub URL, clones the repository, saves/updates Repository record,
-    runs full static, security, complexity, and dependency analysis suite:
-    - Radon (Cyclomatic Complexity)
-    - Pylint (Code Quality & Standards)
-    - Bandit (AST-based Security Scanner)
-    - Semgrep (Pattern-based Security & Bug Scanner)
-    - pip-audit (Known Vulnerability Dependency Scanner)
-    
-    Persists findings to SQLite and returns comprehensive report JSON.
+    runs full static, security, complexity, and dependency analysis suite,
+    computes weighted domain and composite scores, and returns comprehensive report JSON.
     """
     def post(self, request, *args, **kwargs):
         serializer = AnalyzeRequestSerializer(data=request.data)
@@ -81,7 +77,10 @@ class AnalyzeView(APIView):
             semgrep_findings = analyze_and_save_semgrep(run=run, target_dir=clone_path)
             pip_audit_findings = analyze_and_save_pip_audit(run=run, target_dir=clone_path)
 
-            # 5. Mark Run as Completed
+            # 5. Compute & Persist Multi-Dimensional Health & Security Scores
+            score_obj = compute_and_save_score(run=run)
+
+            # 6. Mark Run as Completed
             run.status = 'completed'
             run.completed_at = timezone.now()
             run.save(update_fields=['status', 'completed_at'])
@@ -108,6 +107,7 @@ class AnalyzeView(APIView):
                             "pip_audit": len(pip_audit_findings),
                         }
                     },
+                    "score": ScoreSerializer(score_obj).data,
                     "findings": findings_data,
                     "metadata": clone_result.get('metadata', {}),
                 },
