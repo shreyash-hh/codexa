@@ -5,22 +5,21 @@ from .models import Repository, AnalysisRun, Finding, Score, Recommendation
 @admin.register(Repository)
 class RepositoryAdmin(admin.ModelAdmin):
     list_display = ('id', 'name', 'owner', 'status', 'cloned_at', 'created_at')
-    list_filter = ('status', 'created_at')
     search_fields = ('name', 'owner', 'github_url')
+    list_filter = ('status',)
 
 
 @admin.register(AnalysisRun)
 class AnalysisRunAdmin(admin.ModelAdmin):
     list_display = ('id', 'repository', 'status', 'started_at', 'completed_at')
-    list_filter = ('status', 'started_at')
-    search_fields = ('repository__name', 'repository__owner')
+    list_filter = ('status',)
 
 
 @admin.register(Finding)
 class FindingAdmin(admin.ModelAdmin):
     list_display = ('id', 'run', 'tool_name', 'severity', 'file_path', 'line_no')
     list_filter = ('tool_name', 'severity')
-    search_fields = ('message', 'file_path', 'tool_name')
+    search_fields = ('file_path', 'message')
 
 
 @admin.register(Score)
@@ -30,6 +29,5 @@ class ScoreAdmin(admin.ModelAdmin):
 
 @admin.register(Recommendation)
 class RecommendationAdmin(admin.ModelAdmin):
-    list_display = ('id', 'run', 'priority', 'created_at')
+    list_display = ('id', 'run', 'priority', 'text')
     list_filter = ('priority',)
-    search_fields = ('text',)

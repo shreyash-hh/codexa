@@ -5,8 +5,6 @@ class Repository(models.Model):
     STATUS_CHOICES = [
         ('pending', 'Pending'),
         ('cloned', 'Cloned'),
-        ('analyzing', 'Analyzing'),
-        ('completed', 'Completed'),
         ('failed', 'Failed'),
     ]
 
@@ -16,14 +14,13 @@ class Repository(models.Model):
     cloned_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='pending')
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         verbose_name_plural = 'Repositories'
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.owner}/{self.name} ({self.status})"
+        return f"{self.owner}/{self.name}"
 
 
 class AnalysisRun(models.Model):
@@ -37,7 +34,7 @@ class AnalysisRun(models.Model):
     repository = models.ForeignKey(
         Repository,
         on_delete=models.CASCADE,
-        related_name='analysis_runs'
+        related_name='runs'
     )
     started_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -47,7 +44,7 @@ class AnalysisRun(models.Model):
         ordering = ['-started_at']
 
     def __str__(self):
-        return f"Run #{self.pk} - {self.repository.name} ({self.status})"
+        return f"Run #{self.id} - {self.repository.name} ({self.status})"
 
 
 class Finding(models.Model):
@@ -69,20 +66,16 @@ class Finding(models.Model):
         help_text="e.g. pylint, bandit, radon, semgrep, pip-audit"
     )
     severity = models.CharField(
-        max_length=20,
+        max_length=50,
         choices=SEVERITY_CHOICES,
-        default='info'
+        default='medium'
     )
     message = models.TextField()
-    file_path = models.CharField(max_length=1000, blank=True, null=True)
+    file_path = models.CharField(max_length=500, blank=True, default='')
     line_no = models.IntegerField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ['run', 'severity', 'file_path', 'line_no']
 
     def __str__(self):
-        return f"[{self.tool_name.upper()}] [{self.severity.upper()}] {self.file_path or 'General'}:{self.line_no or '-'}"
+        return f"[{self.tool_name.upper()}][{self.severity.upper()}] {self.file_path}:{self.line_no}"
 
 
 class Score(models.Model):
@@ -95,10 +88,9 @@ class Score(models.Model):
     security_score = models.FloatField(default=0.0)
     dependency_score = models.FloatField(default=0.0)
     composite_score = models.FloatField(default=0.0)
-    calculated_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"Score for Run #{self.run_id}: Composite={self.composite_score:.2f}"
+        return f"Score for Run #{self.run_id}: {self.composite_score:.2f}"
 
 
 class Recommendation(models.Model):
@@ -116,14 +108,10 @@ class Recommendation(models.Model):
     )
     text = models.TextField()
     priority = models.CharField(
-        max_length=20,
+        max_length=50,
         choices=PRIORITY_CHOICES,
         default='medium'
     )
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ['run', 'priority', '-created_at']
 
     def __str__(self):
-        return f"[{self.priority.upper()}] Recommendation for Run #{self.run_id}"
+        return f"[{self.priority.upper()}] Run #{self.run_id}: {self.text[:50]}"
