@@ -1,11 +1,13 @@
 import logging
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from .models import Repository, AnalysisRun
+from .models import Repository, AnalysisRun, Finding
 from .serializers import (
     AnalyzeRequestSerializer,
     RepositorySerializer,
+    FindingSerializer,
     AnalysisRunSerializer
 )
 from .services.github_service import (
@@ -13,6 +15,7 @@ from .services.github_service import (
     cleanup_cloned_repo,
     GitHubServiceError
 )
+from .analyzers.pylint_analyzer import analyze_and_save_pylint
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +24,7 @@ class AnalyzeView(APIView):
     """
     POST /api/analyze/
     Accepts a GitHub URL, clones the repository, saves/updates Repository record,
-    initializes an AnalysisRun, and returns confirmation JSON.
+    runs Pylint static analysis, records findings, and returns detailed results.
     """
     def post(self, request, *args, **kwargs):
         serializer = AnalyzeRequestSerializer(data=request.data)
@@ -41,6 +44,7 @@ class AnalyzeView(APIView):
         try:
             # 1. Clone repository & fetch metadata
             clone_result = clone_github_repo(github_url=github_url, token=token)
+            clone_path = clone_result['clone_path']
 
             # 2. Save / Update Repository in DB
             repo, _ = Repository.objects.update_or_create(
@@ -59,16 +63,31 @@ class AnalyzeView(APIView):
                 status='running'
             )
 
-            # Clean up temp folder after clone confirmation (or retain if needed for analyzers)
-            if clone_result and clone_result.get('clone_path'):
-                cleanup_cloned_repo(clone_result['clone_path'])
+            # 4. Run Pylint Analyzer
+            created_findings = analyze_and_save_pylint(run=run, target_dir=clone_path)
+
+            # 5. Mark Run as Completed
+            run.status = 'completed'
+            run.completed_at = timezone.now()
+            run.save(update_fields=['status', 'completed_at'])
+
+            findings_qs = Finding.objects.filter(run=run)
+            findings_data = FindingSerializer(findings_qs, many=True).data
 
             return Response(
                 {
                     "success": True,
-                    "message": f"Successfully cloned and registered repository '{repo.owner}/{repo.name}'",
+                    "message": f"Successfully analyzed repository '{repo.owner}/{repo.name}'",
                     "repository": RepositorySerializer(repo).data,
-                    "analysis_run_id": run.id,
+                    "analysis_run": {
+                        "id": run.id,
+                        "status": run.status,
+                        "started_at": run.started_at,
+                        "completed_at": run.completed_at,
+                        "total_findings": len(findings_data),
+                        "pylint_findings_count": len(findings_data),
+                    },
+                    "findings": findings_data,
                     "metadata": clone_result.get('metadata', {}),
                 },
                 status=status.HTTP_201_CREATED
@@ -84,7 +103,7 @@ class AnalyzeView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
         except Exception as e:
-            logger.exception("Unexpected error during analysis initialization")
+            logger.exception("Unexpected error during analysis execution")
             return Response(
                 {
                     "success": False,
