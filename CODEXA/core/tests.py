@@ -146,11 +146,11 @@ def complex_fn(a, b, c, d, e, f, g):
             self.assertTrue(Finding.objects.filter(run=run, tool_name='pip-audit').exists())
 
     @patch('core.views.clone_github_repo')
-    @patch('core.views.analyze_and_save_pylint')
-    @patch('core.views.analyze_and_save_bandit')
-    @patch('core.views.analyze_and_save_radon')
-    @patch('core.views.analyze_and_save_semgrep')
-    @patch('core.views.analyze_and_save_pip_audit')
+    @patch('core.views.run_pylint')
+    @patch('core.views.run_bandit')
+    @patch('core.views.run_radon')
+    @patch('core.views.run_semgrep')
+    @patch('core.views.run_pip_audit')
     @patch('core.views.cleanup_cloned_repo')
     def test_analyze_successful_flow(
         self, mock_cleanup, mock_pip, mock_semgrep, mock_radon, mock_bandit, mock_pylint, mock_clone

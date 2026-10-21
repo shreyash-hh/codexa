@@ -1,4 +1,6 @@
+import os
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from django.utils import timezone
 from django.http import HttpResponse, Http404
 from rest_framework import status
@@ -11,7 +13,8 @@ from .serializers import (
     FindingSerializer,
     ScoreSerializer,
     RecommendationSerializer,
-    AnalysisRunSerializer
+    AnalysisRunSerializer,
+    AnalysisRunListSerializer
 )
 from .services.github_service import (
     clone_github_repo,
@@ -21,13 +24,48 @@ from .services.github_service import (
 from .services.scoring_service import compute_and_save_score
 from .services.ai_service import generate_gemini_recommendations
 from .services.report_service import generate_pdf_report
-from .analyzers.pylint_analyzer import analyze_and_save_pylint
-from .analyzers.bandit_analyzer import analyze_and_save_bandit
-from .analyzers.radon_analyzer import analyze_and_save_radon
-from .analyzers.semgrep_analyzer import analyze_and_save_semgrep
-from .analyzers.pip_audit_analyzer import analyze_and_save_pip_audit
+from .analyzers.pylint_analyzer import run_pylint
+from .analyzers.bandit_analyzer import run_bandit
+from .analyzers.radon_analyzer import run_radon
+from .analyzers.semgrep_analyzer import run_semgrep
+from .analyzers.pip_audit_analyzer import run_pip_audit
 
 logger = logging.getLogger(__name__)
+
+# Number of source lines shown above/below a finding for inline code context
+SNIPPET_CONTEXT_LINES = 3
+MAX_SNIPPET_CHARS = 2000
+
+
+def extract_code_snippet(target_dir: str, file_path: str, line_no, context: int = SNIPPET_CONTEXT_LINES) -> str:
+    """
+    Reads a few lines around a finding's location from the cloned repository so the
+    UI can show inline code context. Returns an empty string when unavailable.
+    """
+    if not file_path or not line_no:
+        return ''
+
+    abs_path = os.path.join(target_dir, file_path)
+    if not os.path.isfile(abs_path):
+        return ''
+
+    try:
+        with open(abs_path, 'r', encoding='utf-8', errors='replace') as fh:
+            lines = fh.readlines()
+    except Exception:
+        return ''
+
+    start = max(1, line_no - context)
+    end = min(len(lines), line_no + context)
+    width = len(str(end))
+
+    rendered = []
+    for num in range(start, end + 1):
+        marker = '>' if num == line_no else ' '
+        text = lines[num - 1].rstrip('\n')
+        rendered.append(f"{marker} {str(num).rjust(width)} | {text}")
+
+    return "\n".join(rendered)[:MAX_SNIPPET_CHARS]
 
 
 class AnalyzeView(APIView):
@@ -74,12 +112,61 @@ class AnalyzeView(APIView):
                 status='running'
             )
 
-            # 4. Execute Analyzers
-            pylint_findings = analyze_and_save_pylint(run=run, target_dir=clone_path)
-            bandit_findings = analyze_and_save_bandit(run=run, target_dir=clone_path)
-            radon_findings = analyze_and_save_radon(run=run, target_dir=clone_path)
-            semgrep_findings = analyze_and_save_semgrep(run=run, target_dir=clone_path)
-            pip_audit_findings = analyze_and_save_pip_audit(run=run, target_dir=clone_path)
+            # 4. Execute Analyzers concurrently.
+            #    Each analyzer is subprocess/IO bound, so running the five tools in
+            #    parallel bounds wall-clock time to the slowest single analyzer
+            #    instead of the sum of all five.
+            analyzer_jobs = {
+                'pylint': run_pylint,
+                'bandit': run_bandit,
+                'radon': run_radon,
+                'semgrep': run_semgrep,
+                'pip_audit': run_pip_audit,
+            }
+
+            raw_results = {}
+            with ThreadPoolExecutor(max_workers=len(analyzer_jobs)) as executor:
+                future_to_name = {
+                    executor.submit(fn, clone_path): name
+                    for name, fn in analyzer_jobs.items()
+                }
+                for future in as_completed(future_to_name):
+                    name = future_to_name[future]
+                    try:
+                        raw_results[name] = future.result()
+                    except Exception as e:
+                        logger.exception(f"Analyzer '{name}' failed: {e}")
+                        raw_results[name] = []
+
+            pylint_findings = raw_results.get('pylint', [])
+            bandit_findings = raw_results.get('bandit', [])
+            radon_findings = raw_results.get('radon', [])
+            semgrep_findings = raw_results.get('semgrep', [])
+            pip_audit_findings = raw_results.get('pip_audit', [])
+
+            # Persist every finding in a single bulk insert (thread-safe on SQLite),
+            # capturing inline source context for each located finding.
+            all_raw_findings = (
+                pylint_findings
+                + bandit_findings
+                + radon_findings
+                + semgrep_findings
+                + pip_audit_findings
+            )
+            findings_to_create = [
+                Finding(
+                    run=run,
+                    tool_name=item['tool_name'],
+                    severity=item['severity'],
+                    message=item['message'],
+                    file_path=item['file_path'],
+                    line_no=item['line_no'],
+                    snippet=extract_code_snippet(clone_path, item['file_path'], item['line_no']),
+                )
+                for item in all_raw_findings
+            ]
+            if findings_to_create:
+                Finding.objects.bulk_create(findings_to_create)
 
             # 5. Compute & Persist Multi-Dimensional Health & Security Scores
             score_obj = compute_and_save_score(run=run)
@@ -146,10 +233,24 @@ class AnalyzeView(APIView):
                 cleanup_cloned_repo(clone_result['clone_path'])
 
 
+class AnalysisRunListView(APIView):
+    """
+    GET /api/runs/
+    Lists recent completed analysis runs for quick access and historical comparison.
+    """
+    def get(self, request, *args, **kwargs):
+        runs = AnalysisRun.objects.select_related('repository', 'score').filter(status='completed').order_by('-started_at')[:20]
+        serializer = AnalysisRunListSerializer(runs, many=True)
+        return Response({
+            "success": True,
+            "runs": serializer.data
+        })
+
+
 class AnalysisRunDetailView(APIView):
     """
     GET /api/runs/<run_id>/
-    Retrieves full details for a specific analysis run.
+    Retrieves full details for a specific analysis run, matching dashboard schema.
     """
     def get(self, request, run_id, *args, **kwargs):
         try:
@@ -157,9 +258,44 @@ class AnalysisRunDetailView(APIView):
         except AnalysisRun.DoesNotExist:
             return Response({"success": False, "error": "Analysis run not found"}, status=status.HTTP_404_NOT_FOUND)
 
+        findings_qs = list(run.findings.all())
+        findings_data = FindingSerializer(findings_qs, many=True).data
+        recs_data = RecommendationSerializer(run.recommendations.all(), many=True).data
+
+        summary_by_tool = {
+            "pylint": 0,
+            "bandit": 0,
+            "radon": 0,
+            "semgrep": 0,
+            "pip_audit": 0
+        }
+        for f in findings_qs:
+            tool_key = f.tool_name.lower().replace('-', '_')
+            summary_by_tool[tool_key] = summary_by_tool.get(tool_key, 0) + 1
+
         return Response({
             "success": True,
-            "data": AnalysisRunSerializer(run).data
+            "message": f"Retrieved run #{run.id} for '{run.repository.owner}/{run.repository.name}'",
+            "repository": RepositorySerializer(run.repository).data,
+            "analysis_run": {
+                "id": run.id,
+                "status": run.status,
+                "started_at": run.started_at,
+                "completed_at": run.completed_at,
+                "total_findings": len(findings_data),
+                "summary_by_tool": summary_by_tool,
+            },
+            "score": ScoreSerializer(run.score).data if hasattr(run, 'score') and run.score else None,
+            "recommendations": recs_data,
+            "findings": findings_data,
+            "metadata": {
+                "description": f"Automated audit archive for {run.repository.owner}/{run.repository.name}",
+                "default_branch": "main",
+                "language": "Python",
+                "stargazers_count": 0,
+                "forks_count": 0,
+                "open_issues_count": 0
+            }
         })
 
 

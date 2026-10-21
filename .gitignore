@@ -112,3 +112,7 @@ Thumbs.db
 [Dd]esktop.ini
 .gemini/
 .agents/
+
+# Backups and Archives
+*.bak
+*.zip

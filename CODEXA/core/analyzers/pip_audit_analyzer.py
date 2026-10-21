@@ -8,6 +8,10 @@ from core.models import AnalysisRun, Finding
 
 logger = logging.getLogger(__name__)
 
+# pip-audit performs a network lookup per manifest file, so cap the number of
+# files scanned to keep the dependency audit fast (primary manifest first).
+MAX_MANIFEST_FILES = 3
+
 
 def find_requirements_files(target_dir: str) -> List[str]:
     """
@@ -43,6 +47,14 @@ def run_pip_audit(target_dir: str, python_executable: Optional[str] = None) -> L
         logger.info(f"No requirements/manifest files found in {target_dir} for pip-audit.")
         return []
 
+    # Prefer the primary requirements.txt, then cap the total number of manifests scanned.
+    req_files.sort(key=lambda p: os.path.basename(p) != 'requirements.txt')
+    if len(req_files) > MAX_MANIFEST_FILES:
+        logger.info(
+            f"pip-audit limited to {MAX_MANIFEST_FILES} of {len(req_files)} manifest file(s) for speed."
+        )
+        req_files = req_files[:MAX_MANIFEST_FILES]
+
     for req_file in req_files:
         rel_path = os.path.relpath(req_file, target_dir).replace('\\', '/')
         cmd = [
@@ -63,7 +75,7 @@ def run_pip_audit(target_dir: str, python_executable: Optional[str] = None) -> L
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=120,
+                timeout=45,
                 encoding='utf-8',
                 errors='replace'
             )

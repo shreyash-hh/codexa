@@ -49,7 +49,7 @@ def run_radon(target_dir: str, python_executable: Optional[str] = None) -> List[
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=120,
+            timeout=60,
             encoding='utf-8',
             errors='replace'
         )
@@ -102,7 +102,7 @@ def run_radon(target_dir: str, python_executable: Optional[str] = None) -> List[
         return [{
             'tool_name': 'radon',
             'severity': 'high',
-            'message': 'Radon complexity analysis timed out after 120 seconds.',
+            'message': 'Radon complexity analysis timed out after 60 seconds.',
             'file_path': '',
             'line_no': None
         }]

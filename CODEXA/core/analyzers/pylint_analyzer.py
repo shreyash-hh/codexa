@@ -118,7 +118,7 @@ def run_pylint(target_dir: str, python_executable: Optional[str] = None) -> List
         return [{
             'tool_name': 'pylint',
             'severity': 'high',
-            'message': 'Pylint analysis timed out after 120 seconds.',
+            'message': 'Pylint analysis timed out after 60 seconds.',
             'file_path': '',
             'line_no': None
         }]

@@ -73,6 +73,11 @@ class Finding(models.Model):
     message = models.TextField()
     file_path = models.CharField(max_length=500, blank=True, default='')
     line_no = models.IntegerField(null=True, blank=True)
+    snippet = models.TextField(
+        blank=True,
+        default='',
+        help_text="Captured source lines around line_no for inline review"
+    )
 
     def __str__(self):
         return f"[{self.tool_name.upper()}][{self.severity.upper()}] {self.file_path}:{self.line_no}"

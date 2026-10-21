@@ -100,7 +100,7 @@ def run_bandit(target_dir: str, python_executable: Optional[str] = None) -> List
         return [{
             'tool_name': 'bandit',
             'severity': 'high',
-            'message': 'Bandit security scan timed out after 120 seconds.',
+            'message': 'Bandit security scan timed out after 60 seconds.',
             'file_path': '',
             'line_no': None
         }]

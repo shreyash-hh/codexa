@@ -17,7 +17,7 @@ class AnalyzeRequestSerializer(serializers.Serializer):
 class FindingSerializer(serializers.ModelSerializer):
     class Meta:
         model = Finding
-        fields = ['id', 'tool_name', 'severity', 'message', 'file_path', 'line_no']
+        fields = ['id', 'tool_name', 'severity', 'message', 'file_path', 'line_no', 'snippet']
 
 
 class ScoreSerializer(serializers.ModelSerializer):
@@ -41,3 +41,17 @@ class AnalysisRunSerializer(serializers.ModelSerializer):
     class Meta:
         model = AnalysisRun
         fields = ['id', 'repository', 'started_at', 'completed_at', 'status', 'findings', 'score', 'recommendations']
+
+
+class AnalysisRunListSerializer(serializers.ModelSerializer):
+    repository = RepositorySerializer(read_only=True)
+    score = ScoreSerializer(read_only=True)
+    total_findings = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AnalysisRun
+        fields = ['id', 'repository', 'started_at', 'completed_at', 'status', 'score', 'total_findings']
+
+    def get_total_findings(self, obj):
+        return obj.findings.count()
+

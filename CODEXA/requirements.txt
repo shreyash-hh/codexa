@@ -1,0 +1,35 @@
+# CODEXA Core Backend & Analysis Engine Dependencies
+# Python 3.10+ compatible
+
+# Web Framework & REST API
+Django>=5.1.0,<6.1.0
+djangorestframework>=3.15.0
+django-cors-headers>=4.4.0
+
+# Git Repository Cloning & Management
+GitPython>=3.1.40
+
+# Static Code Quality & Complexity Analysis
+pylint>=3.2.0
+radon>=6.0.1
+
+# Security & AST Vulnerability Auditing
+bandit>=1.7.9
+
+# Dependency & Supply Chain Vulnerability Auditing
+pip-audit>=2.7.3
+
+# AI Recommendation Engine
+google-genai>=1.0.0
+
+# Executive PDF Report Generation
+reportlab>=4.2.0
+
+# HTTP Client & Parsing Utilities
+requests>=2.32.0
+python-dotenv>=1.0.1
+
+# Presentation Generation (Seminar & Viva)
+python-pptx>=1.0.2
+pymupdf>=1.24.0
+python-docx>=1.1.0
